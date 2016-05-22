@@ -1,0 +1,273 @@
+#!/bin/env python
+
+"""
+Generic E2C model. Subclass this to implement custom submodules.
+"""
+from abc import ABCMeta, abstractmethod
+import tensorflow as tf
+import numpy as np
+import nn
+#from variational import *
+import ipdb as pdb
+
+eps=1e-9 # numerical stability
+
+
+# HELPER FNS FOR VARIATIONAL AUTOENCODERS
+class NormalDistribution(object):
+  """
+  Represents a multivariate normal distribution parameterized by
+  N(mu,Cov). If cov. matrix is diagonal, Cov=(sigma).^2. Otherwise,
+  Cov=A*(sigma).^2*A', where A = (I+v*r^T).
+  """
+  def __init__(self,mu,sigma,logsigma,v=None,r=None):
+    self.mu=mu
+    self.sigma=sigma # either stdev diagonal itself, or stdev diagonal from decomposition
+    self.logsigma=logsigma
+    dim=mu.get_shape()
+    assert(len(dim)==2)
+    if v is None:
+      v=tf.constant(0.,shape=dim)
+    if r is None:
+      r=tf.constant(0.,shape=dim)
+    self.v=v
+    self.r=r
+
+def KLGaussian(Q,N):
+  # assumes mu, sigma are flattened
+  # Q, N are instances of NormalDistribution
+  # implements KL Divergence term KL(N0,N1) derived in Appendix A.1
+  # Q ~ Normal(mu,A*sigma*A^T), N ~ Normal(mu,sigma_1)
+  # returns scalar divergence, measured in nats (information units under log rather than log2), shape= batch x 1
+  sum=lambda x: tf.reduce_sum(x,1) # convenience fn for summing over features (columns)
+  k=float(Q.mu.get_shape()[1].value) # dimension of distribution
+  mu0,v,r,mu1=Q.mu,Q.v,Q.r,N.mu
+  s02,s12=tf.square(Q.sigma),tf.square(N.sigma)+eps
+  #vr=sum(v*r)
+  a=sum(s02*(1.+2.*v*r)/s12) + sum(tf.square(v)/s12)*sum(tf.square(r)*s02) # trace term
+  b=sum(tf.square(mu1-mu0)/s12) # difference-of-means term
+  c=2.*(sum(N.logsigma-Q.logsigma) - tf.log(1.+sum(v*r))) # ratio-of-determinants term. 
+  return 0.5*(a+b-k+c)#, a, b, c
+
+def sampleNormal(mu,sigma):
+  # diagonal stdev
+  # assumes flattened
+  n01=tf.random_normal(sigma.get_shape(), mean=0, stddev=1)
+  return mu+sigma*n01
+
+def binary_crossentropy(t,o):
+    return t*tf.log(o+eps) + (1.0-t)*tf.log(1.0-o+eps)
+
+def recons_loss(x,x_recons):
+  # x, x_recons not necessarily flattened
+  with tf.variable_scope("Lx"):
+    bce = binary_crossentropy(x,x_recons)
+    bce = tf.reshape(bce,[x.get_shape()[0].value,-1])
+    ll=tf.reduce_sum(bce,1) # sum across features
+    return -ll # negative log-likelihood
+
+def latent_loss(Q):
+  # assumes mu, sigma flattened
+  with tf.variable_scope("Lz"):
+    mu2=tf.square(Q.mu)
+    sigma2=tf.square(Q.sigma)
+    # negative of the upper bound of posterior
+    return -0.5*tf.reduce_sum(1+2*Q.logsigma-mu2-sigma2,1)
+
+class E2CModel(object):
+  __metaclass__ = ABCMeta
+  def __init__(self, x_dim, z_dim, u_dim, batch_size, u=None):
+    # x = [batch_size, d0, d1, ...]
+    # u = [batch_size, u_dim]
+    super(E2CModel, self).__init__()
+    self.batch_size=batch_size # requires explicit batch_size for VAE to work
+    #x.get_shape()[0].value #regrettable hack, but needed for sampleNormal to work
+    self.u=u # this may not be a placeholder
+    self.x_dim=x_dim #tuple(x.get_shape().as_list()[1:])
+    self.u_dim=u_dim
+    self.x_dim_flat=np.prod(self.x_dim)
+    self.z_dim=z_dim
+    self.buildModel()
+    
+  @abstractmethod
+  def encode(self, x, share=None):
+    # X -> H_ENC
+    # it is the responsibility of the encoder to make h_enc flat
+    return NotImplemented
+
+  def sampleQ_phi(self, h_enc,share=None):
+    # H_ENC -> Z
+    with tf.variable_scope("sampleQ_phi",reuse=share):
+      mu,log_sigma=tf.split(1,2,nn.linear(h_enc,self.z_dim*2)) # diagonal stdev values
+      sigma=tf.exp(log_sigma)
+      return sampleNormal(mu,sigma), NormalDistribution(mu, sigma, log_sigma)
+
+  @abstractmethod
+  def dynamics(self, z):
+    # map Z -> H_TRANS
+    return NotImplemented
+
+  def transition(self, z):
+    # compute A,B,o linearization matrices
+    # Z -> H_TRANS -> (A,B,o)
+    z_dim=self.z_dim
+    u_dim=self.u_dim
+    with tf.variable_scope("trans"):
+      h=self.dynamics(z)
+      with tf.variable_scope("A"):
+        v,r=tf.split(1,2,nn.linear(h,z_dim*2))
+        v1=tf.expand_dims(v,-1) # (batch, z_dim, 1)
+        rT=tf.expand_dims(r,1) # batch, 1, z_dim
+        I=tf.diag([1.]*z_dim)
+        A=(I+tf.batch_matmul(v1,rT)) # (z_dim, z_dim) + (batch, z_dim, 1)*(batch, 1, z_dim) (I is broadcasted) 
+      with tf.variable_scope("B"):
+        B=nn.linear(h,z_dim*u_dim)
+        B=tf.reshape(B,[-1,z_dim,u_dim])
+      with tf.variable_scope("o"):
+        o=nn.linear(h,z_dim)
+      return A,B,o,v,r
+
+  def sampleQ_psi(self,z,u,Q_phi):
+    # Z->Z
+    A,B,o,v,r=self.transition(z)
+    with tf.variable_scope("sampleQ_psi"):
+      mu_t=tf.expand_dims(Q_phi.mu,-1) # batch,z_dim,1
+      Amu=tf.squeeze(tf.batch_matmul(A,mu_t), [-1])
+      u=tf.expand_dims(u,-1) # batch,u_dim,1
+      Bu=tf.squeeze(tf.batch_matmul(B,u),[-1])
+      Q_psi=NormalDistribution(Amu+Bu+o,Q_phi.sigma,Q_phi.logsigma, v, r)
+      # the actual z_next sample is generated by deterministically transforming z_t
+      z=tf.expand_dims(z,-1)
+      Az=tf.squeeze(tf.batch_matmul(A,z),[-1])
+      z_next=Az+Bu+o
+      return z_next,Q_psi#,(A,B,o,v,r) # debugging
+
+  @abstractmethod
+  def decode(self, z, share=None):
+    # Z -> H_DEC
+    return NotImplemented
+
+  def sampleP_theta(self,h_dec,share=None):
+    # H_DEC->X 
+    with tf.variable_scope("P_theta",reuse=share):
+      p=nn.linear(h_dec,self.x_dim_flat)
+      x= tf.sigmoid(p) # mean of bernoulli distribution
+      x=tf.reshape(x,(-1,)+self.x_dim) # reshape to original image dimensions
+      return x
+
+  def buildModel(self):
+    with tf.variable_scope('e2c') as vs:
+      # inputs
+      if self.u is None:
+        self.u = tf.placeholder(tf.float32,[self.batch_size,self.u_dim], "u")
+      x=tf.placeholder(tf.float32, (self.batch_size,)+self.x_dim,"x")
+      x_next=tf.placeholder(tf.float32, (self.batch_size,)+self.x_dim,"x_next")
+      # encode x_t
+      h_enc=self.encode(x)
+      z,Q_phi=self.sampleQ_phi(h_enc)
+      # reconstitute x_t
+      h_dec=self.decode(z)
+      x_recons=self.sampleP_theta(h_dec)
+      # compute linearized dynamics, predict new latent state
+      z_predict,Q_psi=self.sampleQ_psi(z,self.u,Q_phi)
+      # decode prediction
+      h_dec_predict=self.decode(z_predict,share=True)
+      x_predict=self.sampleP_theta(h_dec_predict,share=True)
+      # encode next 
+      h_enc_next=self.encode(x_next,share=True)
+      z_next,Q_phi_next=self.sampleQ_phi(h_enc_next,share=True)  
+    self.e2c_vars = [v for v in tf.all_variables() if v.name.startswith(vs.name)]
+    # save variables
+    self.x=x
+    self.z=z
+    self.x_next=x_next
+    self.x_recons=x_recons
+    self.x_predict=x_predict
+    self.Q_phi=Q_phi
+    self.Q_psi=Q_psi
+    self.Q_phi_next=Q_phi_next
+  
+  def buildLoss(self, lambd):
+    # code may need to be modified to adjust for this
+    with tf.variable_scope("Loss"):
+      L_x=recons_loss(self.x,self.x_recons)
+      L_x_next=recons_loss(self.x_next,self.x_predict)
+      L_z=latent_loss(self.Q_phi)
+      L_bound=L_x+L_x_next+L_z
+      KL=KLGaussian(self.Q_psi,self.Q_phi_next)
+      self.loss_vec = L_bound+lambd*KL
+      self.loss=tf.reduce_mean(self.loss_vec) # average loss over minibatch to single scalar
+      # tmp
+      self.L_x=L_x
+      self.L_x_next=L_x_next
+      self.L_z=L_z
+      self.L_bound=L_bound
+      self.KL=KL
+      # loss summaries
+      tf.scalar_summary("L_x", tf.reduce_mean(L_x))
+      tf.scalar_summary("L_x_next", tf.reduce_mean(L_x_next))
+      tf.scalar_summary("L_z", tf.reduce_mean(L_z))
+      tf.scalar_summary("KL",tf.reduce_mean(KL))
+      tf.scalar_summary("loss", self.loss)
+
+  def buildTrain(self,learning_rate=1e-4):
+    with tf.variable_scope("Optimizer"):
+      optimizer=tf.train.AdamOptimizer(learning_rate, beta1=0.1, beta2=0.1) # beta2=0.1
+      self.train_op=optimizer.minimize(self.loss,var_list=self.e2c_vars)
+      #self.train_op=optimizer.minimize(self.loss)
+
+  def buildSummaries(self):
+    self.all_summaries = tf.merge_all_summaries()
+
+  def update(self, sess, tup, write_summary=False):
+    x0, u0, x1 = tup
+    # these should NOT be flattened
+    feed_dict={self.x:x0,self.u:u0,self.x_next:x1}
+    if write_summary:
+      results=sess.run([self.loss,self.train_op,self.all_summaries],feed_dict)
+    else:
+      results=sess.run([self.loss,self.train_op],feed_dict)
+    return results
+
+  def test(self,sess,tup):
+    x0, u0, x1 = tup
+    feed_dict={self.x:x0,self.u:u0,self.x_next:x1}
+    res=sess.run([self.L_x,self.L_x_next,self.L_z,self.L_bound,self.KL],feed_dict)
+    pdb.set_trace()
+
+  def eval_loss(self, sess, tup):
+    # for retrieving a batch of values that don't fit in minibatch
+    x0, u0, x1 = tup
+    N=x0.shape[0]
+    L=np.zeros(N)
+    for i in range(N // self.batch_size):
+      s=i*self.batch_size
+      e=(i+1)*self.batch_size
+      feed_dict={
+        self.x:x0[s:e,:],
+        self.u:u0[s:e,:],
+        self.x_next:x1[s:e,:]
+      }
+      L[s:e]=sess.run(self.loss, feed_dict)
+    # last remaining might not fit properly into minibatch
+    feed_dict={
+        self.x:x0[-self.batch_size:,:],
+        self.u:u0[-self.batch_size:,:],
+        self.x_next:x1[-self.batch_size:,:]
+    }
+    L[-self.batch_size:]=sess.run(self.loss, feed_dict)
+    return L
+
+  def eval_z(self, sess, x0):
+    N=x0.shape[0]
+    Z=np.zeros((N,self.z_dim))
+    for i in range(N // self.batch_size):
+      s=i*self.batch_size
+      e=(i+1)*self.batch_size
+      Z[s:e]=sess.run(self.z,{self.x:x0[s:e,:]})
+    # leftovers
+    Z[-self.batch_size:,:]=sess.run(self.z,{self.x:x0[-self.batch_size:,:]})
+    return Z
+
+
+
