@@ -60,9 +60,7 @@ loss_predict = tf.square(x_next-x_predict)
 loss = loss_predict + loss_recons
 loss_scalar = tf.reduce_mean(loss) # total loss scalar
 
-# easier to visualize for domain (0,1)
-loss_abs_r = tf.abs(x-x_recons)
-loss_abs_p = tf.abs(x_next-x_predict)
+loss_log = tf.log(loss)
 
 policy_batch.set_reward(loss_scalar) # drive towards area where prediction is weak
 

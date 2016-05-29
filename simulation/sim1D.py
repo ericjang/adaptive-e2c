@@ -39,16 +39,26 @@ def scatter_traj(ax, X,U):
   ax.scatter(X,U)
   ax.set_xlim([0,1])
   ax.set_ylim([-1, 1]) # u limits
+  ax.set_xlabel('X')
+  ax.set_ylabel('A')
+  ax.set_title('State-Action Samples')
 
 def plot_traj(ax,X):
   ax.plot(X)
-  ax.set_ylim([0,1]) 
+  ax.set_ylim([0,1])
+  ax.set_xlim([0,len(X)])
+  ax.set_ylabel('X') 
+  ax.set_xlabel('t')
+  ax.set_title('State trajectory')
 
 def plot_V(ax):
   x=np.linspace(-1,1,100)
   ax.plot(x,fn_V(x))
   ax.set_xlim([0,1])
   ax.set_ylim([0,1])
+  ax.set_xlabel('X')
+  ax.set_ylabel('A')
+  ax.set_title('Resistance Potential')
 
 if __name__ == '__main__':
   # this demonstrates that a random (-1,1) policy has poor mixing because 
@@ -63,8 +73,8 @@ if __name__ == '__main__':
     
   fig,(ax0,ax1,ax2)=plt.subplots(1,3)
   plot_V(ax0)
-  scatter_traj(ax1,X1[:T-1],U0[1:T])
-  plot_traj(ax2,X1)
+  plot_traj(ax1,X1)
+  scatter_traj(ax2,X1[:T-1],U0[1:T])
   plt.show()
 
 

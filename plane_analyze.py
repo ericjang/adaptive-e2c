@@ -46,7 +46,10 @@ def show_recons_samples(sess, episode):
   arr[0].set_title('Data')
   arr[1].matshow(getimgs(xr,xp),cmap=plt.cm.gray,vmin=0,vmax=1)
   arr[1].set_title('Reconstruction')
-  plt.show()
+  arr[0].get_xaxis().set_ticks([])
+  arr[0].get_yaxis().set_ticks([])
+  arr[1].get_xaxis().set_ticks([])
+  arr[1].get_yaxis().set_ticks([])
 
 def viz_z(sess, ckptfile):
   # does not actually use plane1.npz
@@ -155,6 +158,8 @@ def viz_tableau():
     axarr[i,0].set(adjustable='box-forced',aspect='equal')
     axarr[i,0].set_xlim([0,40])
     axarr[i,0].set_ylim([0,40])
+    axarr[i,0].get_xaxis().set_ticks([])
+    axarr[i,0].get_yaxis().set_ticks([])
     # column 1 - expected loss over X0
     # i.e. marginal distribution of L(X)
     L_img = np.zeros((40,40))
@@ -163,11 +168,15 @@ def viz_tableau():
       p0 = Ps[j,:] # r,c
       L_img[int(p0[0]),int(p0[1])] = L[j]
     axarr[i,1].matshow(L_img,cmap=plt.cm.gray)
+    axarr[i,1].get_xaxis().set_ticks([])
+    axarr[i,1].get_yaxis().set_ticks([])
     print(c)
   # add y axis labels
   for i in range(num_plots):
     c=cycles[i]
     axarr[i,0].set_ylabel('cycle '+str(c))
+  axarr[0,0].set_title('Dataset Samples')
+  axarr[0,1].set_title('Model Loss')
 
 def plot_losses():
   '''
@@ -223,10 +232,13 @@ if __name__=="__main__":
   ckpt_file = join(e.DATA_PATH, "%s-%d" % (e.ckpt_prefix, e.num_episodes-1))
   #plot_losses()
   fig=viz_z(e.sess,ckpt_file)
+  plt.savefig('/home/evjang/rand_z.png')
   viz_tableau()
+  plt.savefig('/home/evjang/rand_tableau.png')
   show_recons_samples(e.sess,e.num_episodes-1)
+  plt.savefig('/home/evjang/rand_recons.png')
   plt.show()
-  compute_val_loss()
+  #compute_val_loss()
   #show_recons_seq(sess, "/ltmp/e2c-plane-199000.ckpt")
   #plt.show()
   e.sess.close()

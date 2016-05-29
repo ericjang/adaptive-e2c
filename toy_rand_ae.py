@@ -62,8 +62,10 @@ loss = loss_predict + loss_recons
 loss_scalar = tf.reduce_mean(loss) # total loss scalar
 
 # easier to visualize for domain (0,1)
-loss_abs_r = tf.abs(x-x_recons)
-loss_abs_p = tf.abs(x_next-x_predict)
+# loss_abs_r = tf.abs(x-x_recons)
+# loss_abs_p = tf.abs(x_next-x_predict)
+
+loss_log = tf.log(loss)
 
 saver = tf.train.Saver(max_to_keep=num_cycles)
 sess=tf.InteractiveSession()

@@ -23,10 +23,10 @@ ckpt_prefix="e2c"
 # data_size = 2000
 
 num_episodes=500
-B=200
-C=2
+B=100
+C=3
 batch_size=128
-data_size=3000
+data_size=2000
 
 x_dim=(40,40)
 u_dim=2

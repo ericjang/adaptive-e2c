@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from policies.randpolicy import RandomPolicy
 
 num_episodes=500 # total overall cycles
-B=200 # num minibatches per cycle
+B=100 # num minibatches per cycle
 batch_size=128
 data_size = 2000
 x_dim=(40,40)
@@ -142,10 +142,11 @@ def experiment2():
       t+=1
     print('cycle=%d e2c loss: %f' % (c, e2c_res[0]))
     saver.save(sess, os.path.join(DATA_PATH,ckpt_prefix), global_step=c)
+    np.savez(os.path.join(DATA_PATH, "data_%d.npz" % c), D=D, new=idx_new)
   np.save(os.path.join(DATA_PATH,"l_hist"),l_hist)
   np.savez(os.path.join(DATA_PATH, "data_%d.npz" % c), D=D, new=idx_new)
 
 if __name__ == '__main__':
-  experiment1()
-  #experiment2()
+  #experiment1()
+  experiment2()
   sess.close()
